@@ -1090,14 +1090,14 @@ class NarrativeAnalysisDetector(DetectorBase):
             self.model = AutoModelForCausalLM.from_pretrained(
                 "microsoft/Phi-3-mini-4k-instruct",
                 torch_dtype=torch.float32,
-                device_map="cpu",
+                device_map="cpu", 
                 trust_remote_code=True
-            )
+            )     
             self.tokenizer = AutoTokenizer.from_pretrained("microsoft/Phi-3-mini-4k-instruct", trust_remote_code=True)
             self.logger.info("Phi-3-mini loaded on CPU")
         except Exception as e:
             self.logger.error(f"Phi-3-mini load failed: {e}")
-            self.model = None
+            self.model = None 
             self.tokenizer = None
 
     def analyze(self, video_path: Path) -> List[DetectionResult]:
