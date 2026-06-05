@@ -626,6 +626,7 @@ class SpeechDetector(DetectorBase):
         import soundfile as sf
         import math
         import threading
+        import gc
         from pathlib import Path
 
         print("[DEBUG] transcribe_audio: started (chunked mode)", flush=True)
@@ -661,86 +662,108 @@ class SpeechDetector(DetectorBase):
         with self._progress_lock:
             SpeechDetector._transcription_in_progress[video_str] = event
 
-        # Load full audio
-        y, sr = self._get_audio(video_path)
-        if y.size == 0:
-            self.logger.error("Empty audio array")
-            with self._progress_lock:
-                del SpeechDetector._transcription_in_progress[video_str]
-            return None
-        print(f"[DEBUG] transcribe_audio: audio loaded, shape {y.shape}, sr {sr}, duration {len(y)/sr:.1f}s", flush=True)
+        try:
+            # Load full audio
+            y, sr = self._get_audio(video_path)
+            if y.size == 0:
+                self.logger.error("Empty audio array")
+                return None
+            print(f"[DEBUG] transcribe_audio: audio loaded, shape {y.shape}, sr {sr}, duration {len(y)/sr:.1f}s", flush=True)
 
-        # Chunk parameters
-        chunk_seconds = 30           # length of each chunk
-        overlap_seconds = 1.0        # overlap to avoid cutting words
-        samples_per_chunk = int(chunk_seconds * sr)
-        overlap_samples = int(overlap_seconds * sr)
-        step = samples_per_chunk - overlap_samples
-        total_samples = len(y)
-        num_chunks = int(math.ceil((total_samples - overlap_samples) / step))
+            # Chunk parameters
+            chunk_seconds = 30           # length of each chunk
+            overlap_seconds = 1.0        # overlap to avoid cutting words
+            samples_per_chunk = int(chunk_seconds * sr)
+            overlap_samples = int(overlap_seconds * sr)
+            step = samples_per_chunk - overlap_samples
+            total_samples = len(y)
+            num_chunks = int(math.ceil((total_samples - overlap_samples) / step))
 
-        self.logger.info(f"Transcribing {video_path.name} using {num_chunks} chunks (chunk size {chunk_seconds}s, overlap {overlap_seconds}s)")
-        print(f"[DEBUG] transcribe_audio: splitting into {num_chunks} chunks", flush=True)
+            self.logger.info(f"Transcribing {video_path.name} using {num_chunks} chunks (chunk size {chunk_seconds}s, overlap {overlap_seconds}s)")
+            print(f"[DEBUG] transcribe_audio: splitting into {num_chunks} chunks", flush=True)
 
-        # Get the shared faster-whisper model (singleton)
-        model = self._get_faster_whisper_model()
-        print("[DEBUG] transcribe_audio: model obtained", flush=True)
+            model = self._get_faster_whisper_model()
+            print("[DEBUG] transcribe_audio: model obtained", flush=True)
 
-        all_segments = []
+            all_segments = []
 
-        for i in range(num_chunks):
-            start_sample = i * step
-            end_sample = min(start_sample + samples_per_chunk, total_samples)
-            chunk = y[start_sample:end_sample]
-            offset = start_sample / sr   # time offset for this chunk
+            for i in range(num_chunks):
+                start_sample = i * step
+                end_sample = min(start_sample + samples_per_chunk, total_samples)
+                chunk = y[start_sample:end_sample]
+                chunk_duration = len(chunk) / sr
 
-            # Write chunk to a temporary WAV file (PCM16 for robustness)
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-                temp_audio = Path(tmp.name)
-            sf.write(str(temp_audio), chunk, sr, format='WAV', subtype='PCM_16')
-            print(f"[DEBUG] transcribe_audio: chunk {i+1}/{num_chunks} written to {temp_audio}", flush=True)
-
-            # Transcribe this chunk
-            segments_generator, _ = model.transcribe(str(temp_audio), word_timestamps=False)
-            for seg in segments_generator:
-                all_segments.append({
-                    "start": seg.start + offset,
-                    "end": seg.end + offset,
-                    "text": seg.text,
-                })
-
-            # Clean up temp file
-            temp_audio.unlink()
-            print(f"[DEBUG] transcribe_audio: chunk {i+1}/{num_chunks} done, total segments: {len(all_segments)}", flush=True)
-
-        if not all_segments:
-            self.logger.error("No segments returned from transcription")
-            return None
-
-        # Merge very close/overlapping segments (simple deduplication)
-        merged_segments = []
-        for seg in all_segments:
-            if not merged_segments:
-                merged_segments.append(seg)
-            else:
-                last = merged_segments[-1]
-                # If this segment starts within 0.3s of the previous end and has identical text, skip
-                if seg['start'] - last['end'] < 0.3 and seg['text'].strip() == last['text'].strip():
+                # Skip chunks that are too short (< 0.5s)
+                if chunk_duration < 0.5:
+                    print(f"[DEBUG] Skipping chunk {i+1}/{num_chunks} (too short: {chunk_duration:.2f}s)", flush=True)
                     continue
-                merged_segments.append(seg)
 
-        print(f"[DEBUG] transcribe_audio: total segments after merge: {len(merged_segments)}", flush=True)
-        if merged_segments:
-            print(f"[DEBUG] transcribe_audio: last segment end time: {merged_segments[-1]['end']:.2f}s", flush=True)
+                offset = start_sample / sr
 
-        # Store in cache
-        with self._cache_lock:
-            SpeechDetector.transcription_cache[cache_key] = merged_segments
-            while len(SpeechDetector.transcription_cache) > self.max_cache_size:
-                SpeechDetector.transcription_cache.popitem(last=False)
+                # Write chunk to a temporary WAV file (PCM16 for robustness)
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                    temp_audio = Path(tmp.name)
+                sf.write(str(temp_audio), chunk, sr, format='WAV', subtype='PCM_16')
+                print(f"[DEBUG] transcribe_audio: chunk {i+1}/{num_chunks} written to {temp_audio}", flush=True)
 
-        self.logger.info(f"Transcribed {len(merged_segments)} segments, last end: {merged_segments[-1]['end']:.2f}s")
-        return merged_segments
+                # Transcribe this chunk
+                segments_generator, _ = model.transcribe(str(temp_audio), word_timestamps=False)
+                for seg in segments_generator:
+                    all_segments.append({
+                        "start": seg.start + offset,
+                        "end": seg.end + offset,
+                        "text": seg.text,
+                    })
+
+                # Clean up temp file
+                temp_audio.unlink()
+                print(f"[DEBUG] transcribe_audio: chunk {i+1}/{num_chunks} done, total segments: {len(all_segments)}", flush=True)
+
+                # Free memory between chunks (if GPU)
+                if hasattr(self.config, 'use_gpu') and self.config.use_gpu:
+                    gc.collect()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+
+            if not all_segments:
+                self.logger.error("No segments returned from transcription")
+                return None
+
+            # Merge overlapping/duplicate segments (improved logic)
+            merged_segments = []
+            for seg in all_segments:
+                if not merged_segments:
+                    merged_segments.append(seg)
+                else:
+                    last = merged_segments[-1]
+                    # Check if segments overlap in time AND have identical text
+                    if seg['start'] < last['end'] and seg['text'].strip() == last['text'].strip():
+                        # Skip duplicate in overlap region
+                        continue
+                    merged_segments.append(seg)
+
+            print(f"[DEBUG] transcribe_audio: total segments after merge: {len(merged_segments)}", flush=True)
+            if merged_segments:
+                print(f"[DEBUG] transcribe_audio: last segment end time: {merged_segments[-1]['end']:.2f}s", flush=True)
+
+            # Store in cache
+            with self._cache_lock:
+                SpeechDetector.transcription_cache[cache_key] = merged_segments
+                while len(SpeechDetector.transcription_cache) > self.max_cache_size:
+                    SpeechDetector.transcription_cache.popitem(last=False)
+
+            self.logger.info(f"Transcribed {len(merged_segments)} segments, last end: {merged_segments[-1]['end']:.2f}s")
+            return merged_segments
+
+        except Exception as e:
+            self.logger.error(f"Transcription failed: {e}")
+            print(f"[DEBUG] transcribe_audio: exception: {e}", flush=True)
+            return None
+        finally:
+            event.set()
+            with self._progress_lock:
+                if video_str in SpeechDetector._transcription_in_progress:
+                    del SpeechDetector._transcription_in_progress[video_str]
 
 # ==================== JOKE DETECTOR ====================
 class JokeDetector(SpeechDetector):
