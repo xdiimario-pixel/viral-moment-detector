@@ -634,6 +634,7 @@ class SpeechDetector(DetectorBase):
         video_path = self._normalize_path(video_path)
         resolved_path = video_path.resolve()
         cache_key = f"{resolved_path}_{resolved_path.stat().st_mtime}"
+        video_str = str(resolved_path)  # Define early
         print("[DEBUG] transcribe_audio: cache_key", cache_key, flush=True)
 
         # Check per‑video cache
@@ -643,12 +644,15 @@ class SpeechDetector(DetectorBase):
                 print(f"[DEBUG] transcribe_audio: cache hit, returning {len(SpeechDetector.transcription_cache[cache_key])} segments", flush=True)
                 return SpeechDetector.transcription_cache[cache_key]
 
-        # Check if another thread is already transcribing this video
-        video_str = str(resolved_path)
+        # Check if another thread is already transcribing this video (robust)
+        is_in_progress = False
+        event = None
         with self._progress_lock:
             if video_str in SpeechDetector._transcription_in_progress:
                 event = SpeechDetector._transcription_in_progress[video_str]
-        if 'event' in locals() and event is not None:
+                is_in_progress = True
+
+        if is_in_progress and event is not None:
             self.logger.debug(f"Waiting for ongoing transcription of {video_path.name}")
             print("[DEBUG] transcribe_audio: waiting for another thread", flush=True)
             event.wait()
@@ -671,8 +675,8 @@ class SpeechDetector(DetectorBase):
             print(f"[DEBUG] transcribe_audio: audio loaded, shape {y.shape}, sr {sr}, duration {len(y)/sr:.1f}s", flush=True)
 
             # Chunk parameters
-            chunk_seconds = 30           # length of each chunk
-            overlap_seconds = 1.0        # overlap to avoid cutting words
+            chunk_seconds = 30
+            overlap_seconds = 1.0
             samples_per_chunk = int(chunk_seconds * sr)
             overlap_samples = int(overlap_seconds * sr)
             step = samples_per_chunk - overlap_samples
@@ -693,9 +697,9 @@ class SpeechDetector(DetectorBase):
                 chunk = y[start_sample:end_sample]
                 chunk_duration = len(chunk) / sr
 
-                # Skip chunks that are too short (< 0.5s)
-                if chunk_duration < 0.5:
-                    print(f"[DEBUG] Skipping chunk {i+1}/{num_chunks} (too short: {chunk_duration:.2f}s)", flush=True)
+                # Skip chunks that are too short (< 0.5s) or empty
+                if len(chunk) == 0 or chunk_duration < 0.5:
+                    print(f"[DEBUG] Skipping chunk {i+1}/{num_chunks} (empty or too short: {chunk_duration:.2f}s)", flush=True)
                     continue
 
                 offset = start_sample / sr
@@ -706,8 +710,14 @@ class SpeechDetector(DetectorBase):
                 sf.write(str(temp_audio), chunk, sr, format='WAV', subtype='PCM_16')
                 print(f"[DEBUG] transcribe_audio: chunk {i+1}/{num_chunks} written to {temp_audio}", flush=True)
 
-                # Transcribe this chunk
-                segments_generator, _ = model.transcribe(str(temp_audio), word_timestamps=False)
+                # Transcribe this chunk (add vad_filter and language for better memory/accuracy)
+                segments_generator, _ = model.transcribe(
+                    str(temp_audio),
+                    word_timestamps=False,
+                    vad_filter=True,
+                    vad_parameters=dict(min_speech_duration_ms=250),
+                    language='en'
+                )
                 for seg in segments_generator:
                     all_segments.append({
                         "start": seg.start + offset,
