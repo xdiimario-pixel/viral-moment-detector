@@ -32,7 +32,7 @@ class VideoCutter:
                '-show_frames', '-show_entries', 'frame=pkt_pts_time,key_frame', '-of', 'csv', str(video_path)]
         keyframes = []
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=True)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=90, check=True)
             for line in result.stdout.strip().split('\n'):
                 if not line.strip():
                     continue
@@ -216,34 +216,9 @@ class VideoCutter:
         return output_paths
 
     def _run_ffmpeg_cmd(self, cmd: List[str], output_path: Path, idx: int, moment: ViralMoment) -> Optional[Path]:
-        import subprocess
-        # Parse original command to get input, start, duration
-        input_file = None
-        start_time = None
-        duration = None
-        for i, arg in enumerate(cmd):
-            if arg == '-i' and i+1 < len(cmd):
-                input_file = cmd[i+1]
-            if arg == '-ss' and i+1 < len(cmd):
-                start_time = cmd[i+1]
-            if arg == '-t' and i+1 < len(cmd):
-                duration = cmd[i+1]
-        if not input_file or start_time is None or duration is None:
-            self.logger.error(f"Could not parse ffmpeg command: {cmd}")
-            return None
-        new_cmd = [
-            str(self.config.ffmpeg_path),
-            '-i', input_file,
-            '-ss', start_time,
-            '-t', duration,
-            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
-            '-c:a', 'aac', '-b:a', '128k',
-            '-avoid_negative_ts', 'make_zero',
-            '-y',
-            str(output_path)
-        ]
-        self.logger.info(f"Running ffmpeg (re-encode): {' '.join(new_cmd)}")
-        process = subprocess.Popen(new_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        """Execute the ffmpeg command as built by _build_ffmpeg_command."""
+        self.logger.info(f"Running ffmpeg: {' '.join(cmd)}")
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
             stdout, stderr = process.communicate(timeout=300)
             if process.returncode == 0:
@@ -329,7 +304,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         cmd = [str(self.config.ffmpeg_path), "-i", str(video_path),
                "-vf", f"subtitles={ass_path.name}", "-c:a", "copy", "-y", str(temp_path)]
         try:
-            subprocess.run(cmd, capture_output=True, check=True, timeout=120)
+            subprocess.run(cmd, capture_output=True, check=True, timeout=900)
             video_path.unlink()
             temp_path.rename(video_path)
             self.logger.info(f"Added captions to {video_path.name}")

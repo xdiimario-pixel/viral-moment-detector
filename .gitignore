@@ -6,3 +6,9 @@ __pycache__/
 .env
 .idea/
 .vscode/
+*.out.json
+test_out.mp4
+yolov8n.pt
+viral_hooks.json
+detectors_backup.py
+smoke_test_out.json

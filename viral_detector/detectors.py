@@ -755,6 +755,7 @@ class SpeechDetector(DetectorBase):
             print(f"[DEBUG] transcribe_audio: total segments after merge: {len(merged_segments)}", flush=True)
             if merged_segments:
                 print(f"[DEBUG] transcribe_audio: last segment end time: {merged_segments[-1]['end']:.2f}s", flush=True)
+            print(f"[TRANSCRIPT FINAL] Segments: {len(merged_segments)}, last end: {merged_segments[-1]['end']:.2f}s", flush=True)
 
             # Store in cache
             with self._cache_lock:

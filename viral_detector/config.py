@@ -83,9 +83,9 @@ class DetectionConfig:
     motion_threshold: float = 40.0
     scene_change_threshold: float = 35.0
     silence_threshold: float = 20.0
-    moment_threshold: float = 30.0
-    gap_tolerance: float = 1.5
-    smoothing_window: int = 1   # moving average window size (must be odd)
+    moment_threshold: float = 20.0 
+    gap_tolerance: float = 10.0
+    smoothing_window: int = 5   # moving average window size (must be odd)
 
     content_profile: Optional[ContentProfile] = None
     _profile_multipliers: Dict[DetectionMethod, float] = field(default_factory=dict)
@@ -125,7 +125,7 @@ class DetectionConfig:
 
     # Resource control
     max_detector_workers: int = 4
-    max_cutter_workers: int = 3
+    max_cutter_workers: int = 1
     min_available_ram_gb: float = 2.0
 
     # Whisper (direct transcription)
@@ -178,10 +178,10 @@ class DetectionConfig:
     clip_use_full_distribution: bool = False
 
     # Boundary refinement parameters (tunable)
-    allowed_gap_punc: float = 0.5
-    allowed_gap_no_punc: float = 2.0
+    allowed_gap_punc: float = 10.0
+    allowed_gap_no_punc: float = 10.0
     look_ahead_max_gap: float = 2.5
-    max_expand_sec: float = 20.0
+    max_expand_sec: float = 3600.0
     max_clip_duration: float = 60.0
     max_gap_for_same_sentence: float = 3.0
 

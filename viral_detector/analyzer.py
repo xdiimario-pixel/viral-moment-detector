@@ -279,6 +279,8 @@ class MomentAnalyzer:
             print("[DEBUG] Calling transcribe_audio...", flush=True)
             transcript = first.transcribe_audio(video_path)
             print(f"[DEBUG] Transcript segments: {len(transcript) if transcript else 0}", flush=True)
+            if transcript:
+               print(f"[DEBUG] Transcript last end: {transcript[-1]['end']:.2f}", flush=True)
 
         # --- Semantic detectors (if enabled) ---
         if self.config.use_semantic_detectors and transcript:
@@ -305,13 +307,16 @@ class MomentAnalyzer:
         if not all_results:
             self.logger.warning("No detections")
             return [], None 
-
+ 
         features_df = self.feature_extractor.extract(all_results)
         if self.use_ml and len(features_df) > 0:
             ml_scores = self.ml_model.predict_proba(features_df)
         else:
             ml_scores = np.full(len(features_df), 50.0)
-
+        if transcript:
+           print(f"[DEBUG] Passing transcript to combine: len={len(transcript)}, last_end={transcript[-1]['end']:.2f}", flush=True)
+        else:
+           print("[DEBUG] Passing transcript to combine: None", flush=True)    
         raw_moments = self._combine_detections(video_path, all_results, transcript)
         moments = self._rank_moments_with_ml(video_path, raw_moments, ml_scores, features_df, all_results)
 
@@ -336,6 +341,9 @@ class MomentAnalyzer:
         return moments, transcript
 
     def _combine_detections(self, video_path: Path, results: Dict[float, List[DetectionResult]], transcript: Optional[List[Dict]] = None, video_duration: Optional[float] = None) -> List[ViralMoment]:
+        print(f"[DEBUG] _combine_detections received transcript: len={len(transcript) if transcript else 0}", flush=True)
+        if transcript:
+            print(f"[DEBUG] _combine_detections transcript last_end: {transcript[-1]['end']:.2f}", flush=True)        
         moments = []
         if video_duration is None:
             cap = cv2.VideoCapture(str(video_path))
@@ -374,12 +382,9 @@ class MomentAnalyzer:
         pad = window // 2
         padded = np.pad(raw_scores, pad, mode='edge')
         smoothed = np.convolve(padded, np.ones(window)/window, mode='valid')
-        print(f"[DEBUG] _combine_detections: timestamps {len(timestamps)} raw scores {len(raw_scores)} smoothed {len(smoothed)}", flush=True)
-        print("[DEBUG] first 10 scores (ts, raw, smoothed):", flush=True)
         for i in range(min(10, len(timestamps))):
             print(f"    {timestamps[i]:.2f}: raw={raw_scores[i]:.2f} smoothed={smoothed[i]:.2f}", flush=True)
         if len(timestamps) > 10:
-            print("[DEBUG] last 10 scores (ts, raw, smoothed):", flush=True)
             for i in range(max(0, len(timestamps)-10), len(timestamps)):
                 print(f"    {timestamps[i]:.2f}: raw={raw_scores[i]:.2f} smoothed={smoothed[i]:.2f}", flush=True)        
         
@@ -393,11 +398,9 @@ class MomentAnalyzer:
         for idx, ts in enumerate(timestamps):
             avg_score = smoothed[idx]
             is_above = avg_score > self.config.moment_threshold
-            print(f"[DEBUG] ts={ts:.2f} smoothed={avg_score:.2f} thresh={self.config.moment_threshold} is_above={is_above}, last_high_ts={last_high_ts}, gap={ts - last_high_ts if last_high_ts else 0:.2f}", flush=True)
             
             if is_above:
                 if current is None:
-                    print(f"[DEBUG] starting new moment at {ts:.2f}", flush=True)
                     current = {'start': ts, 'timestamps': [ts], 'scores': [avg_score], 'methods': defaultdict(list)}
                     dets = results[ts]
                     for d in dets:
@@ -436,13 +439,11 @@ class MomentAnalyzer:
                     current = None
                 # else: if current exists but gap not exceeded, do nothing (still inside moment)
         
-        print(f"[DEBUG] raw moments before refinement: {len(moments)}", flush=True)
         for i, m in enumerate(moments):
             print(f"  {i}: {m.start_time:.2f}-{m.end_time:.2f} score={m.combined_score:.2f} peak={m.peak_time:.2f}", flush=True)
         
         # Handle final moment
         if current is not None:
-            print(f"[DEBUG] After loop: current = {current}", flush=True)
             current['duration'] = video_duration - current['start']
             if current['duration'] >= min_dur:
                 peak_ts = current['start']
@@ -459,13 +460,30 @@ class MomentAnalyzer:
                     peak_score=peak_score
                 )
                 if transcript and self.config.smart_boundaries:
+                    print(f"[DEBUG] Before refine: transcript len={len(transcript)}, last_end={transcript[-1]['end']:.2f}, moment start={moment.start_time}, end={moment.end_time}", flush=True)
                     moment = self._refine_moment_boundaries(moment, transcript, video_path, video_duration)
                 moments.append(moment)
                 print(f"[DEBUG] Final moment added: start={moment.start_time:.2f} end={moment.end_time:.2f} duration={moment.duration:.2f}", flush=True)
-        
+
+        print(f"[DEBUG] Before dynamic splitter: moments count={len(moments)}, max_clip_duration={self.config.max_clip_duration}, transcript exists={transcript is not None}")
+        # --- Split long moments using natural boundaries (transcript gaps) ---
+        if self.config.max_clip_duration > 0 and transcript:
+            new_moments = []
+            for m in moments:
+                if m.duration <= self.config.max_clip_duration:
+                    new_moments.append(m)
+                else:
+                    print(f"[DEBUG] Splitting long moment {m.start_time:.1f}-{m.end_time:.1f} dur={m.duration:.1f}")
+                    split_parts = self._split_long_moment(m, transcript)
+                    new_moments.extend(split_parts)
+            moments = new_moments
+        # -----------------------------------------        
         return moments
 
     def _refine_moment_boundaries(self, moment: ViralMoment, transcript: List[Dict], video_path: Path, video_duration: float) -> ViralMoment:
+        if moment.duration > self.config.max_clip_duration:
+           print(f"[REFINE] Skipping refinement for moment longer than max_clip_duration ({moment.duration:.1f}s > {self.config.max_clip_duration}s)")
+           return moment        
         if not transcript or not self.config.smart_boundaries:
             return moment
 
@@ -551,7 +569,84 @@ class MomentAnalyzer:
         for seg in overlapping:
             print(f"    {seg['start']:.2f} -> {seg['end']:.2f}: {seg['text'][:80]}")        
         return moment
+    def _split_long_moment(self, moment: ViralMoment, transcript: List[Dict]) -> List[ViralMoment]:
+        print(f"[SPLIT] Entering _split_long_moment for moment {moment.start_time:.1f}-{moment.end_time:.1f} (duration {moment.duration:.1f})")
+        """Split a moment into smaller pieces at the largest transcript gaps, each ≤ max_clip_duration."""
+        max_dur = self.config.max_clip_duration
+        if moment.duration <= max_dur:
+            return [moment]
 
+        # Collect all transcript segments that overlap with this moment
+        overlapping = []
+        for seg in transcript:
+            if seg['end'] > moment.start_time and seg['start'] < moment.end_time:
+                overlapping.append(seg)
+
+        if len(overlapping) < 2:
+            # No split points – just cap the clip to max_dur centered on peak
+            half = max_dur / 2
+            new_start = max(0.0, moment.peak_time - half)
+            new_end = min(moment.end_time, new_start + max_dur)
+            if new_end - new_start < max_dur:
+                new_start = max(0.0, new_end - max_dur)
+            moment.start_time = new_start
+            moment.end_time = new_end
+            moment.duration = new_end - new_start
+            return [moment]
+
+        # Find the largest gap between consecutive overlapping segments
+        best_gap = 0.0
+        best_idx = -1
+        for i in range(len(overlapping) - 1):
+            gap = overlapping[i+1]['start'] - overlapping[i]['end']
+            if gap > best_gap:
+                best_gap = gap
+                best_idx = i
+
+        if best_gap <= 0.0 or best_idx == -1:
+            # No meaningful gap – fallback to fixed split
+            return self._split_fixed(moment, max_dur)
+
+        # Split at the middle of the largest gap
+        split_time = (overlapping[best_idx]['end'] + overlapping[best_idx+1]['start']) / 2
+        # Create left and right moments
+        left = ViralMoment(
+            start_time=moment.start_time, end_time=split_time, duration=split_time - moment.start_time,
+            combined_score=moment.combined_score, tier=moment.tier, method_scores=moment.method_scores,
+            confidence=moment.confidence, methods_count=moment.methods_count,
+            peak_time=min(moment.peak_time, split_time), peak_score=moment.peak_score,
+            explanations=moment.explanations.copy()
+        )
+        right = ViralMoment(
+            start_time=split_time, end_time=moment.end_time, duration=moment.end_time - split_time,
+            combined_score=moment.combined_score, tier=moment.tier, method_scores=moment.method_scores,
+            confidence=moment.confidence, methods_count=moment.methods_count,
+            peak_time=max(moment.peak_time, split_time), peak_score=moment.peak_score,
+            explanations=moment.explanations.copy()
+        )
+        # Recursively split each part if still too long
+        result = []
+        result.extend(self._split_long_moment(left, transcript))
+        result.extend(self._split_long_moment(right, transcript))
+        return result
+
+    def _split_fixed(self, moment: ViralMoment, max_dur: float) -> List[ViralMoment]:
+        """Fallback: split into fixed‑length chunks (if natural splits fail)."""
+        result = []
+        start = moment.start_time
+        while start < moment.end_time:
+            end = min(start + max_dur, moment.end_time)
+            sub = ViralMoment(
+                start_time=start, end_time=end, duration=end - start,
+                combined_score=moment.combined_score, tier=moment.tier,
+                method_scores=moment.method_scores.copy(), confidence=moment.confidence,
+                methods_count=moment.methods_count, peak_time=start + (end - start)/2,
+                peak_score=moment.peak_score, explanations=moment.explanations.copy()
+            )
+            result.append(sub)
+            start = end
+        return result
+    
     def _rank_moments_with_ml(self, video_path: Path, raw_moments, ml_scores, features_df, all_results):
         moments = []
         hook_result = None
