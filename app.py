@@ -5,6 +5,8 @@ import sys
 import time
 import numpy as np
 import cv2 
+import os
+import shutil
 from datetime import datetime
 from viral_detector import DetectionConfig, MomentAnalyzer, VideoCutter, ContentProfile
 from typing import Dict, List, Optional, Tuple
@@ -15,8 +17,27 @@ sys.path.insert(0, str(Path(__file__).parent))
 from viral_detector import DetectionConfig, MomentAnalyzer, VideoCutter
 from viral_detector.utils import LoggerFactory
 
-DEFAULT_FFMPEG = r"C:\Users\Mario\Desktop\ffmpeg-8.0.1-essentials_build\bin\ffmpeg.exe"
-DEFAULT_FFPROBE = r"C:\Users\Mario\Desktop\ffmpeg-8.0.1-essentials_build\bin\ffprobe.exe"
+def get_ffmpeg_path():
+    # 1. Check environment variable
+    env_path = os.environ.get("FFMPEG_PATH")
+    if env_path and Path(env_path).exists():
+        return str(Path(env_path))
+    # 2. Check system PATH
+    which_path = shutil.which("ffmpeg")
+    if which_path:
+        return which_path
+    # 3. Fallback to common install locations (optional)
+    return "ffmpeg"  # hope it's in PATH
+
+def get_ffprobe_path():
+    env_path = os.environ.get("FFPROBE_PATH")
+    if env_path and Path(env_path).exists():
+        return str(Path(env_path))
+    which_path = shutil.which("ffprobe")
+    if which_path:
+        return which_path
+    return "ffprobe"
+
 
 def show_srt_captions(srt_path: Path):
     """Display SRT captions as formatted text."""
@@ -35,8 +56,62 @@ def show_srt_captions(srt_path: Path):
             for cap in captions:
                 st.markdown(f"• {cap}")
 
-st.set_page_config(page_title="Viral Detector Pro", layout="wide")
-st.title("🔥 Viral Moment Detector Pro")
+st.set_page_config(page_title="Viral Detector Pro", layout="wide", page_icon="🔥")
+
+
+
+st.markdown("""
+<style>
+.hero {
+    background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+    padding: 2rem;
+    border-radius: 1rem;
+    text-align: center;
+    margin-bottom: 2rem;
+    border: 1px solid #334155;
+}
+.hero h1 {
+    color: #f1f5f9 !important;
+    margin: 0;
+    font-size: 2.2rem;
+}
+.hero p {
+    color: #cbd5e1 !important;
+    font-size: 1.1rem;
+    margin-top: 0.5rem;
+}
+</style>
+
+<div class="hero">
+    <h1>🔥 Viral Moment Detector Pro</h1>
+    <p>AI‑powered video analysis – find the moments that go viral</p>
+    <p style="font-size: 0.9rem;">Podcasts · Interviews · Gaming · Reactions</p>
+</div>
+""", unsafe_allow_html=True)
+
+# Feature cards (improved: lighter background, border, subtle shadow)
+col1, col2, col3 = st.columns(3)
+with col1:
+    st.markdown("""
+        <div style='background: #1e293b; border: 1px solid #4a5568; border-radius: 0.75rem; padding: 1.25rem; text-align: center; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);'>
+            <h3 style='color: #f1f5f9; margin: 0 0 0.5rem 0;'>🎯 9+ Detectors</h3>
+            <p style='color: #cbd5e1; margin: 0;'>Audio, motion, faces, objects, speech emotions.</p>
+        </div>
+    """, unsafe_allow_html=True)
+with col2:
+    st.markdown("""
+        <div style='background: #1e293b; border: 1px solid #4a5568; border-radius: 0.75rem; padding: 1.25rem; text-align: center; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);'>
+            <h3 style='color: #f1f5f9; margin: 0 0 0.5rem 0;'>✂️ Smart Clips</h3>
+            <p style='color: #cbd5e1; margin: 0;'>≤60s clips split naturally at pauses.</p>
+        </div>
+    """, unsafe_allow_html=True)
+with col3:
+    st.markdown("""
+        <div style='background: #1e293b; border: 1px solid #4a5568; border-radius: 0.75rem; padding: 1.25rem; text-align: center; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);'>
+            <h3 style='color: #f1f5f9; margin: 0 0 0.5rem 0;'>📝 Auto Captions</h3>
+            <p style='color: #cbd5e1; margin: 0;'>External .SRT subtitles.</p>
+        </div>
+    """, unsafe_allow_html=True)
 
 # ==================== SESSION STATE ====================
 if 'analysis_results' not in st.session_state:
@@ -55,33 +130,25 @@ with st.sidebar:
     mode = st.selectbox("Mode", ["fast", "balanced"], index=1)
     content_profile = st.selectbox("Content Profile", ["None", "podcast", "gaming", "reaction"], index=0)
     use_gpu = st.checkbox("Use GPU", False)
+
     # Caption settings (only for balanced/full)
     if mode in ("balanced", "full"):
         with st.expander("🎬 Caption Settings"):
-            add_captions = st.checkbox("Add captions to clips", value=False)
-            if add_captions:
-                caption_format = st.radio("Caption format", ["Burned (permanent)", "External .SRT file"], index=0)
-                caption_style_preset = st.selectbox("Style preset", ["Default", "Large", "Outline"])
-                # Map preset to style dict
-                if caption_style_preset == "Default":
-                    caption_style = {"font": "Arial", "fontsize": "24", "fontcolor": "white", "bordercolor": "black", "borderw": "1", "alignment": "2"}
-                elif caption_style_preset == "Large":
-                    caption_style = {"font": "Arial", "fontsize": "32", "fontcolor": "yellow", "bordercolor": "black", "borderw": "2", "alignment": "2"}
-                else:  # Outline
-                    caption_style = {"font": "Arial", "fontsize": "24", "fontcolor": "white", "bordercolor": "black", "borderw": "3", "alignment": "2"}
-            else:
-                caption_format = None
-                caption_style = {}
+            add_captions = st.checkbox("Add external SRT captions", value=False)
+            st.caption("Creates .srt subtitle file next to each clip.")
     else:
         add_captions = False
-        caption_format = None
-        caption_style = {}
+
+    # Clip settings (max duration)
+    with st.expander("✂️ Clip Settings"):
+        max_clip_duration = st.slider("Maximum clip length (seconds)", min_value=10, max_value=300, value=60, step=5)
+        st.caption("Clips are split naturally at transcript gaps, never exceeding this length.")
     with st.expander("📱 Vertical Export (TikTok/Reels/Shorts)"):
         vertical_export = st.checkbox("Create square (1:1) clips", value=False)
         if vertical_export:
             st.caption("Original clips will be center‑cropped to square.")        
-    ffmpeg_path = st.text_input("FFmpeg Path", DEFAULT_FFMPEG)
-    ffprobe_path = st.text_input("FFprobe Path", DEFAULT_FFPROBE)
+
+
 
 # ==================== TABS ====================
 tab1, tab2, tab3 = st.tabs(["📹 Select Videos", "🎬 Results", "📊 Status & Summary"])
@@ -106,45 +173,60 @@ with tab1:
             selected_path = str(watch_path / selected_name)
             st.caption(f"Selected: {selected_name}")
 
-if st.button("🚀 Start Analysis", type="primary", use_container_width=True):
+col1, col2, col3 = st.columns([1, 2, 1])
+with col2:
+    start_analysis = st.button("🚀 Start Analysis", type="primary", use_container_width=True)
+
+if start_analysis:
     # Create a status container for live logging
-    status_container = st.status("Analyzing video...", expanded=True)  
+    status_container = st.status("Analyzing video...", expanded=True)   
+    progress_bar = st.progress(0, text="Starting...")
     def log(msg):
         status_container.write(msg)
     log("🚀 Starting analysis")
     start_time = time.time()
     log(f"Mode: {mode} | GPU: {use_gpu}")
     try:
+        progress_bar.progress(5, text="Creating configuration...")
         log("Creating configuration...")
         profile_map = {"podcast": ContentProfile.PODCAST, "gaming": ContentProfile.GAMING, "reaction": ContentProfile.REACTION}
         prof = profile_map.get(content_profile) if content_profile != "None" else None
         config = DetectionConfig(
             watch_folder=Path(watch_folder),
             output_folder=Path(output_folder),
-            ffmpeg_path=Path(ffmpeg_path),
-            ffprobe_path=Path(ffprobe_path),
+            ffmpeg_path=Path(get_ffmpeg_path()),
+            ffprobe_path=Path(get_ffprobe_path()),
             processing_mode=mode,
             use_gpu=use_gpu,
             content_profile=prof,
             add_captions=add_captions,
-            caption_export_srt=(caption_format == "External .SRT file") if add_captions else False,
-            caption_style=caption_style,
-            vertical_export=vertical_export
+            caption_export_srt=add_captions,   # always export SRT if captions enabled
+            vertical_export=vertical_export,
         )
         config.apply_mode()
+        config.max_clip_duration = max_clip_duration
         config.validate()
+        progress_bar.progress(15, text="Config ready")
         log(f"✅ Config ready. {len(config.enabled_methods)} detectors enabled")
+        
+        progress_bar.progress(25, text="Loading models...")
         log("Initializing MomentAnalyzer (loading models may take a while)...")
         analyzer = MomentAnalyzer(config)
         cutter = VideoCutter(config)
         log("✅ Analyzer initialized")
+        
+        progress_bar.progress(45, text="Running detectors...")
         log(f"🔍 Running detection on {selected_name}...")
         moments, transcript = analyzer.analyze_video(Path(selected_path))
         log(f"✅ Detection complete! Found {len(moments)} moments")
+        
+        progress_bar.progress(75, text="Cutting clips...")
         log("✂️ Cutting clips...")
         clips = cutter.cut_moments(Path(selected_path), moments, transcript=transcript, video_duration=None)
         log(f"✅ Created {len(clips)} clips in {output_folder}")
+        
         # --- Processing summary ---
+        progress_bar.progress(90, text="Creating summary...")
         valid_clips = 0
         failed_clips = 0
         for clip_path in clips:
@@ -175,10 +257,13 @@ if st.button("🚀 Start Analysis", type="primary", use_container_width=True):
         }
         st.session_state.last_run_video = selected_name
         st.session_state.last_run_time = time.time()
+        
+        progress_bar.progress(100, text="All done!")
         # Update status to complete
         status_container.update(label="Analysis complete!", state="complete", expanded=False)
 
     except Exception as e:
+        progress_bar.progress(100, text="Failed")
         status_container.update(label="Analysis failed", state="error")
         log(f"❌ ERROR: {e}")
         import traceback
@@ -223,7 +308,7 @@ with tab2:
                             st.markdown(f"**Time:** {m.start_time:.1f}s – {m.end_time:.1f}s  (duration {m.duration:.1f}s)")
                             st.progress(m.combined_score/100, text=f"Score {m.combined_score:.1f}")
                             # Show explanations
-                            if hasattr(m, 'explanations') and m.explanations:
+                            if hasattr(m, 'explanations') and m.explanations: 
                                 st.markdown("💡 **Why this moment is viral:**")
                                 for reason in m.explanations:
                                     st.markdown(f"- {reason}")
